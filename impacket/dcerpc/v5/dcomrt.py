@@ -34,7 +34,7 @@ import socket
 from struct import pack
 from threading import Timer, current_thread
 
-from impacket.dcerpc.v5.ndr import NDRCALL, NDRSTRUCT, NDRPOINTER, NDRUniConformantArray, NDRTLSTRUCT, UNKNOWNDATA
+from impacket.dcerpc.v5.ndr import NDRCALL, NDRSTRUCT, NDRPOINTER, NDRArray, NDRUniConformantArray, NDRTLSTRUCT, UNKNOWNDATA
 from impacket.dcerpc.v5.dtypes import LPWSTR, ULONGLONG, HRESULT, GUID, USHORT, WSTR, DWORD, LPLONG, LONG, PGUID, ULONG, \
     UUID, WIDESTR, NULL
 from impacket import hresult_errors, LOG
@@ -415,7 +415,7 @@ class PROPMARSHALHEADER(NDRSTRUCT):
         ('ctxProperty',':'),
     )
 
-class PROPMARSHALHEADER_ARRAY(NDRUniConformantArray):
+class PROPMARSHALHEADER_ARRAY(NDRArray): #NDRUniConformantArray):
     item = PROPMARSHALHEADER
 
 # 2.2.20 Context
@@ -524,6 +524,10 @@ class CustomHeader(TypeSerialization1):
             TypeSerialization1.getDataReferents(self, soFar))
         self['cIfs'] = len(self['pclsid'])
         return TypeSerialization1.getData(self, soFar)
+    def getDataAndReferents(self):
+        self['headerSize'] = len(TypeSerialization1.getDataAndReferents(self))
+        self['cIfs'] = len(self['pclsid'])
+        return TypeSerialization1.getDataAndReferents(self)
 
 # 2.2.22 Activation Properties BLOB
 class ACTIVATION_BLOB(NDRTLSTRUCT):
@@ -538,6 +542,13 @@ class ACTIVATION_BLOB(NDRTLSTRUCT):
             self['CustomHeader'].getDataReferents(soFar)) + len(self['Property'])
         self['CustomHeader']['totalSize'] = self['dwSize']
         return NDRTLSTRUCT.getData(self)
+    def getDataAndReferents(self, soFar = 0):
+        customheaderlen = len(self['CustomHeader'].getDataAndReferents())
+        size = ULONG()
+        size['Data'] = customheaderlen + len(self['Property'])
+        self['dwSize'] = size
+        self['CustomHeader']['totalSize'] = size
+        return size.getData() + ULONG().getData() + self['CustomHeader'].getDataAndReferents() + self['Property']
 
 # 2.2.22.2.1 InstantiationInfoData
 class IID_ARRAY(NDRUniConformantArray):
@@ -964,7 +975,7 @@ class DCOMConnection:
     PORTMAPS = {}
 
     def __init__(self, target, username='', password='', domain='', lmhash='', nthash='', aesKey='', TGT=None, TGS=None,
-                 authLevel=RPC_C_AUTHN_LEVEL_PKT_PRIVACY, oxidResolver=False, doKerberos=False, kdcHost=None, remoteHost=None):
+                 authLevel=RPC_C_AUTHN_LEVEL_PKT_PRIVACY, oxidResolver=False, doKerberos=False, kdcHost=None):
         self.__target = target
         self.__userName = username
         self.__password = password
@@ -979,7 +990,6 @@ class DCOMConnection:
         self.__oxidResolver = oxidResolver
         self.__doKerberos = doKerberos
         self.__kdcHost = kdcHost
-        self.__remoteHost = remoteHost
         self.initConnection()
 
     @classmethod
@@ -1059,10 +1069,6 @@ class DCOMConnection:
     def initConnection(self):
         stringBinding = r'ncacn_ip_tcp:%s' % self.__target
         rpctransport = transport.DCERPCTransportFactory(stringBinding)
-
-        if self.__remoteHost:
-            rpctransport.setRemoteHost(self.__remoteHost)
-            rpctransport.setRemoteName(self.__target)
 
         if hasattr(rpctransport, 'set_credentials') and len(self.__userName) >=0:
             # This method exists only for selected protocol sequences.
@@ -1292,11 +1298,6 @@ class INTERFACE:
                     raise Exception('Can\'t find a valid stringBinding to connect')
 
                 dcomInterface = transport.DCERPCTransportFactory(stringBinding)
-
-                if DCOMConnection.PORTMAPS[self.__target].get_rpc_transport().get_kerberos():
-                    dcomInterface.setRemoteHost(DCOMConnection.PORTMAPS[self.__target].get_rpc_transport().getRemoteHost())
-                    dcomInterface.setRemoteName(DCOMConnection.PORTMAPS[self.__target].get_rpc_transport().getRemoteName())
-
                 if hasattr(dcomInterface, 'set_credentials'):
                     # This method exists only for selected protocol sequences.
                     dcomInterface.set_credentials(*DCOMConnection.PORTMAPS[self.__target].get_credentials())
@@ -1595,7 +1596,7 @@ class IActivation:
 
         classInstance = CLASS_INSTANCE(ORPCthis, stringBindings)
         return IRemUnknown2(INTERFACE(classInstance, b''.join(resp['ppInterfaceData'][0]['abData']), ipidRemUnknown,
-                                      target=self.__portmap.get_rpc_transport().getRemoteName()))
+                                      target=self.__portmap.get_rpc_transport().getRemoteHost()))
 
 
 # 3.1.2.5.2.2 IRemoteSCMActivator Methods
@@ -1761,7 +1762,7 @@ class IRemoteSCMActivator:
         classInstance.set_auth_level(scmr['remoteReply']['authnHint'])
         classInstance.set_auth_type(self.__portmap.get_auth_type())
         return IRemUnknown2(INTERFACE(classInstance, b''.join(propsOut['ppIntfData'][0]['abData']), ipidRemUnknown,
-                                      target=self.__portmap.get_rpc_transport().getRemoteName()))
+                                      target=self.__portmap.get_rpc_transport().getRemoteHost()))
 
     def RemoteCreateInstance(self, clsId, iid):
         # Only supports one interface at a time
@@ -1925,4 +1926,4 @@ class IRemoteSCMActivator:
         classInstance.set_auth_level(scmr['remoteReply']['authnHint'])
         classInstance.set_auth_type(self.__portmap.get_auth_type())
         return IRemUnknown2(INTERFACE(classInstance, b''.join(propsOut['ppIntfData'][0]['abData']), ipidRemUnknown,
-                                      target=self.__portmap.get_rpc_transport().getRemoteName()))
+                                      target=self.__portmap.get_rpc_transport().getRemoteHost()))

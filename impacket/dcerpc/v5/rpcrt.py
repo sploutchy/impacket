@@ -1467,17 +1467,24 @@ class PrivateHeader(NDRSTRUCT):
     def __init__(self, data = None,isNDR64 = False):
         NDRSTRUCT.__init__(self, data, isNDR64)
         if data is None:
-            self['Filler'] = 0xcccccccc
+            self['Filler'] = 0x00000000
 
 class TypeSerialization1(NDRSTRUCT):
     commonHdr = (
         ('CommonHeader', CommonHeader),
         ('PrivateHeader', PrivateHeader),
     )
+    def getDataAndReferents(self):
+        templen = len(NDRSTRUCT.getData(self)) + len(
+            NDRSTRUCT.getDataReferents(self)) - len(self['CommonHeader']) - len(self['PrivateHeader'])
+        pad = (8 - ((templen - 16) % 8)) % 8
+        self['PrivateHeader']['ObjectBufferLength'] = templen + pad
+        return NDRSTRUCT.getData(self) + NDRSTRUCT.getDataReferents(self) + b'\x00'*pad
     def getData(self, soFar = 0):
         self['PrivateHeader']['ObjectBufferLength'] = len(NDRSTRUCT.getData(self, soFar)) + len(
             NDRSTRUCT.getDataReferents(self, soFar)) - len(self['CommonHeader']) - len(self['PrivateHeader'])
         return NDRSTRUCT.getData(self, soFar)
+
 
 class DCERPCServer(Thread):
     """
